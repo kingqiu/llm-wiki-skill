@@ -1,9 +1,9 @@
 ---
 name: llm-wiki
-version: 0.3.0
+version: 0.4.0
 description: |
   Build, query, and maintain a personal LLM-powered wiki from a local knowledge base.
-  Features three distinct modes: Ingest (add knowledge), Query (ask questions), and Lint (health check).
+  Features three distinct modes: Ingest (add knowledge), Query (ask questions), and Lint+Heal (health check + auto-repair).
   Supports multiple knowledge source directories, automatic Quartz initialization, and GitHub Pages sync.
 allowed-tools:
   - Bash
@@ -254,17 +254,150 @@ Offer to sync to GitHub Pages if `GITHUB_PAGES` is configured.
 
 ---
 
-## Lint Flow (Wiki Health Check)
+## Lint + Heal Flow (Wiki Health Check & Auto-Repair)
 
-1. **Broken links:** Find wikilinks pointing to non-existent pages.
-2. **Orphan pages:** Find pages with no inbound links.
-3. **Missing concept pages:** Find concepts mentioned in text but lacking their own pages.
-4. **Contradictions:** Identify claims that conflict across pages.
-5. **Knowledge gaps:** Propose 2-3 specific questions the wiki cannot currently answer — and suggest web searches to fill them.
-6. **Report:** Present all findings clearly to the user.
-7. **Action:** Offer to (a) auto-fix broken links and orphans, and (b) run a web search to fill the top knowledge gap.
+### Phase 1: Scan (fully automatic)
 
-After lint, append to `log.md`: `## [YYYY-MM-DD] lint | {summary of findings}`
+Read ALL markdown files under `{WIKI_DIR}/content/`. Check five issue types:
+
+**1. Broken links** (all pages)
+Collect every `[[wikilink]]` in every page. For each, check whether the target file exists under `content/`. Flag any that don't.
+
+**2. Orphan pages** (all pages)
+Find pages that have zero inbound wikilinks from any other page. Sources being orphaned is lower severity than concepts or synthesis.
+
+**3. Missing concept pages** (all pages)
+Scan all page bodies for noun phrases that appear ≥ 2 times across the wiki but have no corresponding page in any `concepts/` directory. Limit to top 5 most-mentioned missing concepts.
+
+**4. Contradictions** (concepts + synthesis pages)
+Compare factual claims across `concepts/` and `synthesis/` pages. Flag direct conflicts (e.g., page A says X is true, page B says X is false).
+
+**5. Knowledge gaps** (whole wiki)
+Identify 2–3 specific questions the wiki currently cannot answer based on its coverage. Frame as questions, not vague topics.
+
+**Stale content check (run alongside scan):**
+Find any paragraph or page that contains `⚠️ 待验证` AND was last modified more than 180 days ago. Add to report as "建议复核".
+
+---
+
+### Phase 2: Report
+
+Present findings grouped by severity. Use this format:
+
+```
+📋 Wiki 健康报告 — YYYY-MM-DD
+扫描了 N 个页面
+
+🔴 断链（N处）
+  - {page} 第{n}行 → [[{target}]] 不存在
+
+🟡 孤立页（N处）
+  - {page} — 没有任何页面链接到它
+
+🟡 缺少概念页（N个）
+  - "{concept}" — 在 N 个页面中被提到，但没有概念页
+
+🟠 矛盾（N处）
+  - {page A} 与 {page B} 关于"{topic}"的说法冲突
+
+🔵 知识空白（Wiki 目前无法回答）
+  1. {question}
+  2. {question}
+
+⏰ 建议复核（⚠️标记超过180天）
+  - {page} — 标记于 {date}
+```
+
+---
+
+### Phase 3: Confirm what to fix
+
+After the report, present two fix categories and ask the user which to execute:
+
+```
+是否需要修复？请告诉我要做哪些，或直接说「全做」/「只做A」：
+
+【A 类 — 自动修复，不需联网】
+  A1. 删除/注释 N 处断链 wikilink
+  A2. 为 N 个孤立页在最相关页面补入链
+
+【B 类 — 联网补充】
+  B1. 为"{concept}"生成新概念页（需联网搜索）
+  B2. 填补知识空白："{question}"（需联网搜索）
+```
+
+Wait for user confirmation before proceeding.
+
+---
+
+### Phase 4: Heal Execution
+
+#### A-type fixes (no web search)
+
+**A1 — Broken links:**
+- If the target page clearly doesn't exist and can't be inferred: remove the wikilink brackets, keep plain text.
+- If a similar page exists (typo or path issue): correct the wikilink path.
+
+**A2 — Orphan pages:**
+- Read the orphan page's content to understand its topic.
+- Find the 1–2 most related pages in the wiki.
+- Add a brief mention + wikilink to the orphan from those pages (append to a "Related" or "See also" section).
+
+#### B-type fixes (web search required)
+
+For each B-type item, follow this pipeline strictly:
+
+**Step 1 — Search**
+```
+WebSearch("{concept or question} site:arxiv.org OR site:anthropic.com OR site:github.com OR site:huggingface.co OR site:paperswithcode.com")
+```
+If results are thin, retry without domain filter.
+
+**Step 2 — Filter by trusted domains**
+Prioritize results from (in order):
+1. arxiv.org / aclanthology.org — academic papers
+2. anthropic.com / openai.com / deepmind.com — primary sources
+3. github.com — official repos
+4. huggingface.co / paperswithcode.com
+
+Deprioritize: blogs, social media, aggregators.
+
+**Step 3 — Fetch full content**
+Use `baoyu-url-to-markdown` skill on the top 2–3 URLs to get full page content.
+
+**Step 4 — Cross-validate**
+- If a key fact appears in ≥ 2 independent sources → write it as a direct statement.
+- If a key fact appears in only 1 source → write it with `⚠️ 待验证` marker.
+
+**Step 5 — Write to wiki**
+
+For missing concept pages (B1):
+Create `{WIKI_DIR}/content/{topic}/concepts/{concept-slug}.md` following SCHEMA.md format. Append at the bottom:
+```markdown
+---
+*Sources added by Heal on YYYY-MM-DD:*
+- [Title](url) · YYYY-MM
+- [Title](url) · YYYY-MM
+```
+
+For knowledge gaps (B2):
+If the answer fits an existing page, append a new section to that page.
+If the answer is broad enough, create a new synthesis page.
+Always append source citations in the same format above.
+
+**Never overwrite existing content.** Only append new sections or create new pages.
+
+---
+
+### Phase 5: Wrap up
+
+After all fixes are applied:
+1. Run `npx quartz build` to rebuild the wiki.
+2. Append to `log.md`:
+```
+## [YYYY-MM-DD] lint+heal | 断链:{n}处, 孤立页:{n}个, 新建概念页:{list}, 填补空白:{list}
+```
+3. Show the user a summary of everything changed.
 
 ---
 
