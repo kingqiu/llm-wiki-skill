@@ -1,10 +1,10 @@
 ---
 name: llm-wiki
-version: 0.5.0
+version: 0.6.0
 description: |
   Build, query, and maintain a personal LLM-powered wiki from a local knowledge base.
   Features three distinct modes: Ingest (add knowledge), Query (ask questions with auto-enhancement), and Lint+Heal (health check + auto-repair).
-  Query mode includes knowledge compounding loop: automatic logging, smart enhancement suggestions (A/B/C/D types), and periodic review.
+  Query mode includes full knowledge compounding loop (Tier 1-3): automatic logging, smart enhancement (A/B/C/D types), and periodic review with query pattern analysis and archiving.
   Supports multiple knowledge source directories, automatic Quartz initialization, and GitHub Pages sync.
 allowed-tools:
   - Bash
@@ -340,6 +340,19 @@ Identify 2–3 specific questions the wiki currently cannot answer based on its 
 **Stale content check (run alongside scan):**
 Find any paragraph or page that contains `⚠️ 待验证` AND was last modified more than 180 days ago. Add to report as "建议复核".
 
+**6. Query pattern analysis (Tier 3 of knowledge compounding loop):**
+Read `{WIKI_DIR}/query-stats.json` if it exists:
+- Count queries by topic/theme
+- Identify high-frequency topics (≥3 queries on same topic)
+- Find repeated questions that Wiki cannot answer well
+- Example: if "cost optimization" was queried 3+ times but no related pages exist, flag it
+
+**7. Query archive check:**
+Check the oldest timestamp in `query-stats.json`:
+- If oldest record is >180 days old, flag for archiving
+- Archive target: `query-stats-archive-YYYY-QN.json` (by quarter)
+- Keep only recent 180 days in query-stats.json
+
 ---
 
 ### Phase 2: Report
@@ -368,13 +381,23 @@ Present findings grouped by severity. Use this format:
 
 ⏰ 建议复核（⚠️标记超过180天）
   - {page} — 标记于 {date}
+
+📊 Query 模式分析（基于 N 次查询记录）
+  高频主题（≥3次）：
+  - "{topic}" — 被问了 N 次，Wiki 中缺少相关页面
+  建议补充的问题：
+  - "{question}"（来自 knowledge-gaps.md）
+
+⏰ Query 记录归档建议
+  - 最早记录：YYYY-MM-DD（距今 X 天）
+  - 建议归档 180 天前的记录到：query-stats-archive-YYYY-QN.json
 ```
 
 ---
 
 ### Phase 3: Confirm what to fix
 
-After the report, present two fix categories and ask the user which to execute:
+After the report, present three fix categories and ask the user which to execute:
 
 ```
 是否需要修复？请告诉我要做哪些，或直接说「全做」/「只做A」：
@@ -386,6 +409,10 @@ After the report, present two fix categories and ask the user which to execute:
 【B 类 — 联网补充】
   B1. 为"{concept}"生成新概念页（需联网搜索）
   B2. 填补知识空白："{question}"（需联网搜索）
+  B3. 补充高频 Query 主题："{topic}"（需联网搜索）
+
+【C 类 — Query 数据维护】
+  C1. 归档 180 天前的 query 记录 → query-stats-archive-YYYY-QN.json
 ```
 
 Wait for user confirmation before proceeding.
@@ -449,6 +476,29 @@ Always append source citations in the same format above.
 
 **Never overwrite existing content.** Only append new sections or create new pages.
 
+#### C-type fixes (query data maintenance)
+
+**C1 — Archive old query records:**
+1. Read `{WIKI_DIR}/query-stats.json`
+2. Split records into two groups:
+   - `recent`: timestamp within last 180 days
+   - `old`: timestamp older than 180 days
+3. If `old` is empty: tell user "没有需要归档的记录（最早记录距今不足180天）"
+4. If `old` has records:
+   - Determine archive filename by quarter of oldest record:
+     - Q1: Jan-Mar → `query-stats-archive-YYYY-Q1.json`
+     - Q2: Apr-Jun → `query-stats-archive-YYYY-Q2.json`
+     - Q3: Jul-Sep → `query-stats-archive-YYYY-Q3.json`
+     - Q4: Oct-Dec → `query-stats-archive-YYYY-Q4.json`
+   - Write `old` records to archive file (append if file exists, create if not)
+   - Write `recent` records back to `query-stats.json`
+   - Tell user: "已归档 {N} 条记录到 {archive_filename}，query-stats.json 保留最近 {M} 条"
+
+**B3 — Supplement high-frequency query topics:**
+- Same pipeline as B1/B2 (web search → validate → write to wiki)
+- Target: create a new concept or synthesis page for the high-frequency topic
+- Use the original queries as context to understand what the user wants to know
+
 ---
 
 ### Phase 5: Wrap up
@@ -457,7 +507,7 @@ After all fixes are applied:
 1. Run `npx quartz build` to rebuild the wiki.
 2. Append to `log.md`:
 ```
-## [YYYY-MM-DD] lint+heal | 断链:{n}处, 孤立页:{n}个, 新建概念页:{list}, 填补空白:{list}
+## [YYYY-MM-DD] lint+heal | 断链:{n}处, 孤立页:{n}个, 新建概念页:{list}, 填补空白:{list}, 归档query:{n}条
 ```
 3. Show the user a summary of everything changed.
 
