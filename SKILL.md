@@ -210,16 +210,71 @@ Threshold rules:
 
 Read `{WIKI_DIR}/SCHEMA.md` FIRST to strictly follow page format and wikilink rules.
 
-**Batch mode:** Process all sources at once, generate all pages, then show the user a summary.
+**CRITICAL: Bilingual Content Generation (Default Behavior)**
 
-**Deep-read mode:** Process one source at a time, show the result, wait for feedback, then proceed to the next.
+All wiki pages MUST be generated in bilingual format (English + Chinese) by default. For each paragraph:
+1. Write the English content first
+2. Immediately translate to Chinese using the configured translation engine
+3. Append the translation as: `<div class="zh-trans">中文翻译</div>`
+
+**Translation Engine Selection:**
+Read `~/.claude/skills/llm-wiki/config.md` to get translation settings:
+- `primary_engine`: First choice (zhipu/deepl/minimax)
+- `fallback_engine`: Backup if primary fails
+- If both fail, log error and continue with English-only
+
+**Translation Rules:**
+- Preserve technical terms in English: Agent, Harness, CLI, LLM, SDK, API, RAG, MCP, etc.
+- Keep proper nouns, product names, and code identifiers untranslated
+- Translate naturally for Chinese technical documentation style
+- Do NOT translate: frontmatter, code blocks, URLs, wikilinks
+
+**GLM-5 Translation Function (Zhipu AI):**
+```python
+def translate_paragraph(text: str, api_key: str, endpoint: str) -> str:
+    """Translate using GLM-5 via Anthropic-compatible API."""
+    prompt = f"""请将以下英文技术文本翻译成中文。要求：
+1. 技术术语保持英文（如 Agent、Harness、CLI、LLM、SDK、API 等）
+2. 翻译自然流畅，符合中文技术文档习惯
+3. 只输出翻译结果，不要任何解释
+
+{text}"""
+    
+    payload = {
+        "model": "GLM-5",
+        "max_tokens": 2000,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+    )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = json.loads(response.read())
+            return result["content"][0]["text"].strip()
+    except Exception as e:
+        # Log error and return empty (fallback to English-only)
+        print(f"Translation failed: {e}")
+        return ""
+```
+
+**Batch mode:** Process all sources at once, generate all pages in bilingual format, then show the user a summary.
+
+**Deep-read mode:** Process one source at a time, generate bilingual content, show the result, wait for feedback, then proceed to the next.
 
 For each source:
-1. Generate a source summary page in `{WIKI_DIR}/content/{topic}/sources/`
-2. Create or update concept pages in `{WIKI_DIR}/content/{topic}/concepts/`
-3. Create or update entity pages in `{WIKI_DIR}/content/{topic}/entities/`
-4. Create synthesis pages for cross-cutting insights in `{WIKI_DIR}/content/{topic}/synthesis/`
-5. Write or update `{WIKI_DIR}/content/{topic}/overview.md`
+1. Generate a bilingual source summary page in `{WIKI_DIR}/content/{topic}/sources/`
+2. Create or update bilingual concept pages in `{WIKI_DIR}/content/{topic}/concepts/`
+3. Create or update bilingual entity pages in `{WIKI_DIR}/content/{topic}/entities/`
+4. Create bilingual synthesis pages for cross-cutting insights in `{WIKI_DIR}/content/{topic}/synthesis/`
+5. Write or update bilingual `{WIKI_DIR}/content/{topic}/overview.md`
 6. Update `{WIKI_DIR}/content/index.md`
 7. Append to `{WIKI_DIR}/content/log.md` using format: `## [YYYY-MM-DD] ingest | {topic} | {source_title}`
 
@@ -458,10 +513,15 @@ Use `baoyu-url-to-markdown` skill on the top 2–3 URLs to get full page content
 - If a key fact appears in ≥ 2 independent sources → write it as a direct statement.
 - If a key fact appears in only 1 source → write it with `⚠️ 待验证` marker.
 
-**Step 5 — Write to wiki**
+**Step 5 — Write to wiki (BILINGUAL)**
+
+**CRITICAL: All new content MUST be bilingual.**
 
 For missing concept pages (B1):
-Create `{WIKI_DIR}/content/{topic}/concepts/{concept-slug}.md` following SCHEMA.md format. Append at the bottom:
+Create `{WIKI_DIR}/content/{topic}/concepts/{concept-slug}.md` following SCHEMA.md format.
+- Write each paragraph in English first
+- Immediately translate using GLM-5 and append `<div class="zh-trans">中文翻译</div>`
+- Append at the bottom:
 ```markdown
 ---
 *Sources added by Heal on YYYY-MM-DD:*
@@ -470,8 +530,8 @@ Create `{WIKI_DIR}/content/{topic}/concepts/{concept-slug}.md` following SCHEMA.
 ```
 
 For knowledge gaps (B2):
-If the answer fits an existing page, append a new section to that page.
-If the answer is broad enough, create a new synthesis page.
+If the answer fits an existing page, append a new bilingual section to that page.
+If the answer is broad enough, create a new bilingual synthesis page.
 Always append source citations in the same format above.
 
 **Never overwrite existing content.** Only append new sections or create new pages.
@@ -554,7 +614,9 @@ with http.server.HTTPServer(("", PORT), CleanURLHandler) as httpd:
 
 ## Important Rules
 
-- Use Chinese for all user-facing communication, English for wiki content.
+- Use Chinese for all user-facing communication.
+- **All wiki content MUST be bilingual (English + Chinese) by default.** Each English paragraph followed by `<div class="zh-trans">中文翻译</div>`.
+- Translation engine priority: read from config.md (primary_engine → fallback_engine).
 - NEVER modify files in the user's source/knowledge-base directories — they are read-only.
 - All writes go to `{WIKI_DIR}`.
 - Always update `index.md` and `log.md` after every operation.
