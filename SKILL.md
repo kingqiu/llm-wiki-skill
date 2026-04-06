@@ -1,9 +1,10 @@
 ---
 name: llm-wiki
-version: 0.4.0
+version: 0.5.0
 description: |
   Build, query, and maintain a personal LLM-powered wiki from a local knowledge base.
-  Features three distinct modes: Ingest (add knowledge), Query (ask questions), and Lint+Heal (health check + auto-repair).
+  Features three distinct modes: Ingest (add knowledge), Query (ask questions with auto-enhancement), and Lint+Heal (health check + auto-repair).
+  Query mode includes knowledge compounding loop: automatic logging, smart enhancement suggestions (A/B/C/D types), and periodic review.
   Supports multiple knowledge source directories, automatic Quartz initialization, and GitHub Pages sync.
 allowed-tools:
   - Bash
@@ -248,9 +249,70 @@ Offer to sync to GitHub Pages if `GITHUB_PAGES` is configured.
 ## Query Flow (Asking Questions)
 
 1. **Search:** Read `{WIKI_DIR}/content/index.md`, identify relevant pages, read them.
+
 2. **Answer:** Synthesize a comprehensive answer with citations.
-3. **Capture insight:** After answering, ALWAYS ask: `这个分析有价值，要作为综合分析（Synthesis）存入 Wiki 吗？`
-4. **Save (if yes):** Create a synthesis page in the relevant topic's `synthesis/` directory, update `index.md`, append to `log.md`.
+
+3. **Auto-log:** Automatically record this query to `{WIKI_DIR}/query-stats.json`:
+   ```json
+   {
+     "timestamp": "2026-04-06T14:23:45Z",
+     "query": "{user_question}",
+     "pages_consulted": ["{page1}", "{page2}"],
+     "tokens_generated": {estimated_tokens},
+     "enhancement_type": null,
+     "action_taken": "answered only"
+   }
+   ```
+   If the file doesn't exist, create it as an empty array `[]` first.
+
+4. **Evaluate enhancement:** Check if this query meets quality thresholds:
+   - ≥3 pages consulted, OR
+   - >500 tokens generated, OR
+   - Reveals contradiction/gap between pages
+   
+   If threshold met, determine enhancement type:
+   - **A**: New synthesis page (comprehensive cross-page analysis)
+   - **B**: Enhance existing page (found missing content in a concept page)
+   - **C**: Add cross-reference (found related pages without wikilinks)
+   - **D**: Log knowledge gap (cannot answer sufficiently)
+
+5. **Execute enhancement:**
+   
+   **C-type (auto):** 
+   - Add wikilink to the Connections section of the relevant page
+   - Update the query-stats.json entry with `"enhancement_type": "C"` and `"action_taken": "added cross-reference between {page1} and {page2}"`
+   - Briefly note at end of answer: `[已自动添加 {page1} ↔ {page2} 的交叉引用]`
+   
+   **D-type (auto):** 
+   - Append to `{WIKI_DIR}/knowledge-gaps.md` (create if doesn't exist):
+     ```markdown
+     ## [YYYY-MM-DD] {topic}
+     - 问题：{user_question}
+     - 原因：Wiki 中缺少相关内容
+     - 建议：联网搜索补充相关概念
+     ```
+   - Update query-stats.json entry with `"enhancement_type": "D"` and `"action_taken": "logged knowledge gap"`
+   - Briefly note: `[已将此问题记录到知识空白清单，供下次 Lint 时补充]`
+   
+   **A-type (confirm):** 
+   - Ask user:
+     ```
+     💡 这个分析综合了 {N} 个页面，生成了 {X} tokens 的深度对比。
+     建议创建新的 synthesis 页面：{topic}/synthesis/{slug}.md
+     是否保存？(y/n)
+     ```
+   - If yes: create page following SCHEMA.md format, update index.md, append to log.md, update query-stats.json with `"enhancement_type": "A"` and `"action_taken": "created synthesis/{filename}"`
+   - If no: update query-stats.json with `"enhancement_type": "A"` and `"action_taken": "user declined"`
+   
+   **B-type (confirm):** 
+   - Ask user:
+     ```
+     💡 发现 {page} 缺少关于 {topic} 的内容。
+     建议追加新小节：## {section_title}
+     是否保存？(y/n)
+     ```
+   - If yes: append section to page, append to log.md, update query-stats.json with `"enhancement_type": "B"` and `"action_taken": "enhanced {page} with new section"`
+   - If no: update query-stats.json with `"enhancement_type": "B"` and `"action_taken": "user declined"`
 
 ---
 
